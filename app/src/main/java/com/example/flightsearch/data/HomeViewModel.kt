@@ -30,7 +30,6 @@ class HomeViewModel(
     private val flightsRepository: FlightsRepository
 ) : ViewModel() {
 
-    // Estado local instantâneo da busca para a UI (corrige o pulo do cursor)
     private val _searchQuery = MutableStateFlow("")
 
     private val _selectedAirport = MutableStateFlow<AirportEntity?>(null)
@@ -38,14 +37,12 @@ class HomeViewModel(
     private var saveSearchJob: Job? = null
 
     init {
-        // Carrega o termo salvo no DataStore ao iniciar o ViewModel
         viewModelScope.launch {
             val initialQuery = userPreferencesRepository.searchQuery.first()
             _searchQuery.value = initialQuery
         }
     }
 
-    // Flow com Debounce de 300ms para evitar buscas no banco a cada letra digitada
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     private val airportsListFlow: Flow<List<AirportEntity>> = _searchQuery
         .debounce(300L.milliseconds)
@@ -67,22 +64,44 @@ class HomeViewModel(
     }
 
     private val favoritesFlow: Flow<List<FavoriteEntity>> = flightsRepository.getAllFavorites()
+    private val allAirportsFlow: Flow<List<AirportEntity>> = flightsRepository.getAllAirports()
+
+    private val favoriteRoutesFlow: Flow<List<FlightRouteModel>> = combine(
+        favoritesFlow,
+        allAirportsFlow
+    ) { favorites, allAirports ->
+        val allAirportsMap = allAirports.associateBy { it.iataCode }
+        favorites.map { fav ->
+            val depAirport = allAirportsMap[fav.departureCode]?.toAirportModel()
+                ?: AirportModel(0, fav.departureCode, fav.departureCode)
+            val destAirport = allAirportsMap[fav.destinationCode]?.toAirportModel()
+                ?: AirportModel(0, fav.destinationCode, fav.destinationCode)
+
+            FlightRouteModel(
+                id = fav.id,
+                departureAirport = depAirport,
+                destinationAirport = destAirport,
+                isFavorite = true
+            )
+        }
+    }
 
     val uiState: StateFlow<HomeUiState> = combine(
         _searchQuery,
         _selectedAirport,
         airportsListFlow,
         flightRoutesFlow,
-        favoritesFlow
-    ) { query, selectedAirport, airports, destinations, favorites ->
+        favoriteRoutesFlow
+    ) { query, selectedAirport, airports, destinations, favoriteRoutes ->
 
         val airportsListModel = airports.map { it.toAirportModel() }
         val selectedAirportModel = selectedAirport?.toAirportModel()
 
         val routesModel = if (selectedAirport != null) {
             destinations.map { dest ->
-                val isFav = favorites.any { fav ->
-                    fav.departureCode == selectedAirport.iataCode && fav.destinationCode == dest.iataCode
+                val isFav = favoriteRoutes.any { fav ->
+                    fav.departureAirport.iataCode == selectedAirport.iataCode &&
+                            fav.destinationAirport.iataCode == dest.iataCode
                 }
                 FlightRouteModel(
                     id = dest.id,
@@ -95,26 +114,12 @@ class HomeViewModel(
             emptyList()
         }
 
-        val favoriteRoutesModel = favorites.map { fav ->
-            val depAirport = flightsRepository.getAirportsByIataCode(fav.departureCode)?.toAirportModel()
-                ?: AirportModel(0, fav.departureCode, fav.departureCode)
-            val destAirport = flightsRepository.getAirportsByIataCode(fav.destinationCode)?.toAirportModel()
-                ?: AirportModel(0, fav.destinationCode, fav.destinationCode)
-
-            FlightRouteModel(
-                id = fav.id,
-                departureAirport = depAirport,
-                destinationAirport = destAirport,
-                isFavorite = true
-            )
-        }
-
         HomeUiState(
             searchQuery = query,
             selectedAirport = selectedAirportModel,
             airportsList = airportsListModel,
             flightRoutes = routesModel,
-            favoriteRoutes = favoriteRoutesModel
+            favoriteRoutes = favoriteRoutes
         )
     }.stateIn(
         scope = viewModelScope,
@@ -123,13 +128,11 @@ class HomeViewModel(
     )
 
     fun updateSearchQuery(query: String) {
-        // 1. Atualiza o estado síncrono instantaneamente para o OutlinedTextField (sem pulo de cursor)
         _searchQuery.value = query
         if (query.isBlank()) {
             _selectedAirport.value = null
         }
 
-        // 2. Debounce de 500ms para salvar no DataStore de forma assíncrona
         saveSearchJob?.cancel()
         saveSearchJob = viewModelScope.launch {
             delay(500L.milliseconds)
@@ -146,14 +149,18 @@ class HomeViewModel(
 
     fun toggleFavorite(route: FlightRouteModel) {
         viewModelScope.launch {
-            val favEntity = FavoriteEntity(
-                departureCode = route.departureAirport.iataCode,
-                destinationCode = route.destinationAirport.iataCode
-            )
             if (route.isFavorite) {
-                flightsRepository.deleteFavorite(favEntity)
+                flightsRepository.deleteFavoriteByCodes(
+                    departureCode = route.departureAirport.iataCode,
+                    destinationCode = route.destinationAirport.iataCode
+                )
             } else {
-                flightsRepository.insertFavorite(favEntity)
+                flightsRepository.insertFavorite(
+                    FavoriteEntity(
+                        departureCode = route.departureAirport.iataCode,
+                        destinationCode = route.destinationAirport.iataCode
+                    )
+                )
             }
         }
     }

@@ -1,7 +1,6 @@
 package com.example.flightsearch.data
 
 import androidx.room.Dao
-import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -11,6 +10,9 @@ import kotlinx.coroutines.flow.Flow
 interface FlightsDao {
     @Query("SELECT * FROM airport WHERE iata_code LIKE '%' || :query || '%' OR name LIKE '%' || :query || '%' ORDER BY passengers DESC")
     fun searchAirports(query: String): Flow<List<AirportEntity>>
+
+    @Query("SELECT * FROM airport ORDER BY passengers DESC")
+    fun getAllAirports(): Flow<List<AirportEntity>>
 
     @Query("SELECT * FROM airport WHERE iata_code = :code LIMIT 1")
     suspend fun getAirportByIataCode(code: String): AirportEntity?
@@ -24,6 +26,6 @@ interface FlightsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFavorite(favorite: FavoriteEntity)
 
-    @Delete
-    suspend fun deleteFavorite(favorite: FavoriteEntity)
+    @Query("DELETE FROM favorite WHERE departure_code = :departureCode AND destination_code = :destinationCode")
+    suspend fun deleteFavoriteByCodes(departureCode: String, destinationCode: String)
 }
